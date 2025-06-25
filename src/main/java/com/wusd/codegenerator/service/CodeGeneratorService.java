@@ -10,8 +10,10 @@ import com.wusd.codegenerator.utils.MyBeanUtils;
 import org.joda.time.DateTime;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Service;
 
+import java.util.Arrays;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
@@ -88,23 +90,25 @@ public class CodeGeneratorService {
     private String generateNextAndGetCode(CodeRule codeRule) {
         StringBuilder code = new StringBuilder();
         String today = DateTime.now().toString("yyyyMMdd");
+        boolean containsDate = codeRule.getItemList().stream().filter(o -> o.getRuleType().equals(2)).findAny().isPresent();
         for (CodeRuleItem codeRuleItem : codeRule.getItemList()) {
             if (codeRuleItem.getRuleType().equals(1)) {// 固定字符
                 code.append(codeRuleItem.getFixedChars());
             } else if (codeRuleItem.getRuleType().equals(2)) {// 日期
                 code.append(today);
             } else if (codeRuleItem.getRuleType().equals(3)) {// 自增数字
-                code.append(generateNumAndGet(codeRuleItem, today));
+                code.append(generateNumAndGet(codeRuleItem, today, containsDate));
             }
         }
         return code.toString();
     }
 
-    private String generateNumAndGet(CodeRuleItem codeRuleItem, String today) {
+    private String generateNumAndGet(CodeRuleItem codeRuleItem, String today, boolean containsDate) {
+        if (!containsDate) today = "";
         String redisCodeRuleItemKey = redisCodeRuleItemKeyPrefix + today + ":" + codeRuleItem.getId();
         String lockRedisKey = redisLockPrefix + redisCodeRuleItemKey;
         String clientId = UUID.randomUUID().toString();
-        Long increment;
+        Integer numCurrent;
 
         while (true) {
             try {
@@ -114,19 +118,29 @@ public class CodeGeneratorService {
                     continue;
                 }
                 if (!integerRedis.hasKey(redisCodeRuleItemKey)) {
-                    integerRedis.opsForValue().set(redisCodeRuleItemKey, codeRuleItem.getNumStart(), 1, TimeUnit.DAYS);
+                    if (containsDate) {
+                        integerRedis.opsForValue().set(redisCodeRuleItemKey, codeRuleItem.getNumStart(), 1, TimeUnit.DAYS);
+                    } else {
+                        integerRedis.opsForValue().set(redisCodeRuleItemKey, codeRuleItem.getNumStart());
+                    }
                 }
-                increment = integerRedis.opsForValue().increment(redisCodeRuleItemKey);
+                numCurrent = integerRedis.opsForValue().get(redisCodeRuleItemKey);
+                integerRedis.opsForValue().increment(redisCodeRuleItemKey);
                 break;
             } catch (InterruptedException e) {
                 throw new RuntimeException(e);
             } finally {
-                if (clientId.equals(lockRedis.opsForValue().get(lockRedisKey))) {
-                    lockRedis.delete(lockRedisKey);
-                }
+//                if (clientId.equals(lockRedis.opsForValue().get(lockRedisKey))) {
+//                    lockRedis.delete(lockRedisKey);
+//                }
+                // 这个具备原子性
+                String deleteLockScript = "if redis.call('get', KEYS[1]) == ARGV[1] " +
+                        "then redis.call('del', KEYS[1]) " +
+                        "else return 0 end";
+                lockRedis.execute(new DefaultRedisScript<>(deleteLockScript), Arrays.asList(lockRedisKey), clientId);
             }
         }
-        return String.format("%0" + codeRuleItem.getNumLength() + "d", increment);
+        return String.format("%0" + codeRuleItem.getNumLength() + "d", numCurrent);
     }
 
     public static void main(String[] args) {

@@ -19,5 +19,6 @@ public class CodeRuleItem {
     private String fixedChars;
     private Integer numLength;
     private Integer numStart;
+    private Integer numCurrent;
     private Integer position;
 }

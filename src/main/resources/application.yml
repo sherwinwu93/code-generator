@@ -9,3 +9,5 @@ spring:
       host: localhost
       port: 6379            # Redis 端口
       password:             # 如果有密码可以在这里配置
+server:
+  port: 9078
