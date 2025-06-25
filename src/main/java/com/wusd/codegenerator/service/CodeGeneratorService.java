@@ -13,6 +13,7 @@ import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
+import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -26,12 +27,16 @@ public class CodeGeneratorService {
     CodeRuleBriefMapper briefMapper;
     @Autowired
     CodeRuleItemMapper itemMapper;
-//    @Autowired
-//    RedisTemplate<String, CodeRule> codeRuleRedisTemplate;
-//    @Autowired
-//    RedisTemplate<String, Integer> integerRedis;
+    @Autowired
+    RedisTemplate<String, CodeRule> codeRuleRedisTemplate;
+    @Autowired
+    RedisTemplate<String, Integer> integerRedis;
+    @Autowired
+    RedisTemplate<String, String> lockRedis;
     private String redisCodeRuleKeyPrefix = "redisCodeRuleKey:";
     private String redisCodeRuleItemKeyPrefix = "redisCodeRuleItemKey:";
+    private String redisLockPrefix = "redisLock:";
+
     public String generateNextAndGetCode(String name) {
         CodeRule codeRule = cache$getCodeRule(name);
         return this.generateNextAndGetCode(codeRule);
@@ -39,12 +44,31 @@ public class CodeGeneratorService {
 
     private CodeRule cache$getCodeRule(String name) {
         String redisCodeRuleKey = redisCodeRuleKeyPrefix + name;
-//        if (!codeRuleRedisTemplate.hasKey(redisCodeRuleKey)) {
-//            codeRuleRedisTemplate.opsForValue().set(redisCodeRuleKey, getCodeRuleByName(name));
-//        }
-//        CodeRule codeRule = codeRuleRedisTemplate.opsForValue().get(redisCodeRuleKey);
-//        return codeRule;
-        return null;
+        String clientId = UUID.randomUUID().toString();
+        String redisLockKey = redisLockPrefix + redisCodeRuleKey;
+
+        while (true) {
+            try {
+                Boolean locked = lockRedis.opsForValue().setIfAbsent(redisLockKey, clientId);
+                if (!locked) {
+                    TimeUnit.MILLISECONDS.sleep(100);
+                    continue;
+                }
+                if (!codeRuleRedisTemplate.hasKey(redisCodeRuleKey)) {
+                    codeRuleRedisTemplate.opsForValue().set(redisCodeRuleKey, getCodeRuleByName(name));
+                }
+                break;
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
+            } finally {
+                if (clientId.equals(lockRedis.opsForValue().get(redisLockKey))) {
+                    lockRedis.delete(redisLockKey);
+                }
+            }
+        }
+
+        CodeRule codeRule = codeRuleRedisTemplate.opsForValue().get(redisCodeRuleKey);
+        return codeRule;
     }
 
     private CodeRule getCodeRuleByName(String name) {
@@ -52,7 +76,8 @@ public class CodeGeneratorService {
                 .eq("name", name);
         CodeRuleBrief codeRuleBrief = briefMapper.selectOne(briefQueryWrapper);
         QueryWrapper<CodeRuleItem> itemQueryWrapper = new QueryWrapper<CodeRuleItem>()
-                .eq("codeRuleBriefId", codeRuleBrief.getId());
+                .eq("code_rule_brief_id", codeRuleBrief.getId())
+                .orderBy(true, true, "position");
         List<CodeRuleItem> codeRuleItems = itemMapper.selectList(itemQueryWrapper);
 
         CodeRule codeRule = MyBeanUtils.convert(codeRuleBrief, CodeRule.class);
@@ -76,13 +101,32 @@ public class CodeGeneratorService {
     }
 
     private String generateNumAndGet(CodeRuleItem codeRuleItem, String today) {
-//        String redisCodeRuleItemKey = redisCodeRuleItemKeyPrefix + today + ":" + codeRuleItem.getId();
-//        if (!integerRedis.hasKey(redisCodeRuleItemKey)) {
-//            integerRedis.opsForValue().set(redisCodeRuleItemKey, codeRuleItem.getNumStart(), 1, TimeUnit.DAYS);
-//        }
-//        Long increment = integerRedis.opsForValue().increment(redisCodeRuleItemKey);
-//        return String.format("%0" + codeRuleItem.getNumLength() + "d", increment);
-        return null;
+        String redisCodeRuleItemKey = redisCodeRuleItemKeyPrefix + today + ":" + codeRuleItem.getId();
+        String lockRedisKey = redisLockPrefix + redisCodeRuleItemKey;
+        String clientId = UUID.randomUUID().toString();
+        Long increment;
+
+        while (true) {
+            try {
+                Boolean locked = lockRedis.opsForValue().setIfAbsent(lockRedisKey, clientId);
+                if (!locked) {
+                    TimeUnit.MILLISECONDS.sleep(100);
+                    continue;
+                }
+                if (!integerRedis.hasKey(redisCodeRuleItemKey)) {
+                    integerRedis.opsForValue().set(redisCodeRuleItemKey, codeRuleItem.getNumStart(), 1, TimeUnit.DAYS);
+                }
+                increment = integerRedis.opsForValue().increment(redisCodeRuleItemKey);
+                break;
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
+            } finally {
+                if (clientId.equals(lockRedis.opsForValue().get(lockRedisKey))) {
+                    lockRedis.delete(lockRedisKey);
+                }
+            }
+        }
+        return String.format("%0" + codeRuleItem.getNumLength() + "d", increment);
     }
 
     public static void main(String[] args) {
