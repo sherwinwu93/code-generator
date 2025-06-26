@@ -53,7 +53,7 @@ public class CodeGeneratorService {
             try {
                 Boolean locked = lockRedis.opsForValue().setIfAbsent(redisLockKey, clientId);
                 if (!locked) {
-                    TimeUnit.MILLISECONDS.sleep(100);
+                    TimeUnit.MILLISECONDS.sleep(50);
                     continue;
                 }
                 if (!codeRuleRedisTemplate.hasKey(redisCodeRuleKey)) {
@@ -66,6 +66,11 @@ public class CodeGeneratorService {
                 if (clientId.equals(lockRedis.opsForValue().get(redisLockKey))) {
                     lockRedis.delete(redisLockKey);
                 }
+                // 这个具备原子性
+//                String deleteLockScript = "if redis.call('get', KEYS[1]) == ARGV[1] " +
+//                        "then redis.call('del', KEYS[1]) " +
+//                        "else return 0 end";
+//                lockRedis.execute(new DefaultRedisScript<>(deleteLockScript), Arrays.asList(redisLockKey), clientId);
             }
         }
 
@@ -130,14 +135,14 @@ public class CodeGeneratorService {
             } catch (InterruptedException e) {
                 throw new RuntimeException(e);
             } finally {
-//                if (clientId.equals(lockRedis.opsForValue().get(lockRedisKey))) {
-//                    lockRedis.delete(lockRedisKey);
-//                }
+                if (clientId.equals(lockRedis.opsForValue().get(lockRedisKey))) {
+                    lockRedis.delete(lockRedisKey);
+                }
                 // 这个具备原子性
-                String deleteLockScript = "if redis.call('get', KEYS[1]) == ARGV[1] " +
-                        "then redis.call('del', KEYS[1]) " +
-                        "else return 0 end";
-                lockRedis.execute(new DefaultRedisScript<>(deleteLockScript), Arrays.asList(lockRedisKey), clientId);
+//                String deleteLockScript = "if redis.call('get', KEYS[1]) == ARGV[1] " +
+//                        "then redis.call('del', KEYS[1]) " +
+//                        "else return 0 end";
+//                lockRedis.execute(new DefaultRedisScript<>(deleteLockScript), Arrays.asList(lockRedisKey), clientId);
             }
         }
         return String.format("%0" + codeRuleItem.getNumLength() + "d", numCurrent);
